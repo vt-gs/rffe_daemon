@@ -15,8 +15,8 @@ import threading
 import time
 
 from logger import *
-#import numato
-import service_thread
+import device_thread    #connection to PA or RF Front End
+import service_thread   #User interface to daemon
 
 class Main_Thread(threading.Thread):
     def __init__ (self, cfg):
@@ -55,13 +55,8 @@ class Main_Thread(threading.Thread):
             self._handle_state_terminating()
         sys.exit()
 
-
-
-
     def _send_service_resp(self,msg):
         self.service_thread._send_resp(msg)
-
-
 
     def _handle_state_terminating(self):
         print "\nCaught CTRL-C, Killing Threads..."
@@ -101,7 +96,12 @@ class Main_Thread(threading.Thread):
         if (not self.service_thread.rx_q.empty()): #msg received from client
             msg = self.service_thread.rx_q.get()
             print '{:s} | Service Thread RX Message: {:s}'.format(self.name, msg)
-            self.service_thread.tx_q.put(msg)
+            self.rffe_thread.tx_q.put(msg)
+
+        if (not self.rffe_thread.rx_q.empty()): #msg received from client
+            fb_msg = self.rffe_thread.rx_q.get()
+            print '{:s} | RFFE Thread RX Message: {:s}'.format(self.name, fb_msg)
+            self.service_thread.tx_q.put(fb_msg)
 
         if (not self.service_thread.get_connection_state()):
             self.set_state('STANDBY', 'client disconnected')
@@ -115,8 +115,9 @@ class Main_Thread(threading.Thread):
         pass
 
     def _handle_state_fault(self):
-        if self.service_thread.connected:
-            self.set_state('STANDBY', 'Service Thread reconnected to Broker')
+        #if self.service_thread.connected:
+        #    self.set_state('STANDBY', 'Service Thread reconnected to Broker')
+        pass
 
     def set_state(self, state, msg=None):
         self.state = state
@@ -138,10 +139,11 @@ class Main_Thread(threading.Thread):
 
     def _init_threads(self):
         try:
-            #Initialize Relay Thread
-            #self.logger.info('Setting up Relay_Thread')
-            #self.relay_thread = numato.Ethernet_Relay(self.args)
-            #self.relay_thread.daemon = True
+            #Initialize RFFE Thread
+            self.logger.info('Setting up RFFE_Thread')
+            print self.cfg['rffe']
+            self.rffe_thread = device_thread.VHF_UHF_Thread(self.ssid, self.cfg['rffe'])
+            self.rffe_thread.daemon = True
 
             #Initialize Server Thread
             self.logger.info('Setting up TCP Service_Thread')
@@ -149,8 +151,8 @@ class Main_Thread(threading.Thread):
             self.service_thread.daemon = True
 
             #Launch threads
-            #self.logger.info('Launching Relay_Thread')
-            #self.relay_thread.start() #non-blocking
+            self.logger.info('Launching RFFE_Thread')
+            self.rffe_thread.start() #non-blocking
 
             self.logger.info('Launching Service_Thread')
             self.service_thread.start() #non-blocking

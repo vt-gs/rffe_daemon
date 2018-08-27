@@ -1,14 +1,13 @@
 #!/usr/bin/env python
-#############################################
-#   Title: Relay Daemon Service Thread      #
-# Project: VTGS Relay Control Daemon        #
-# Version: 2.0                              #
-#    Date: Dec 15, 2017                     #
-#  Author: Zach Leffke, KJ4QLP              #
-# Comment:                                  #
-#   -Relay Control Daemon Service Thread    #
-#   -This is the User interface             #
-#############################################
+################################################################################
+#   Title: RF Front End Control Daemon Service Thread
+# Project: VTGS
+# Version: 1.0.0
+#    Date: Aug 26, 2018
+#  Author: Zach Leffke, KJ4QLP
+# Comments:
+#   -This is the user interface thread
+################################################################################
 
 import threading
 import time
@@ -79,20 +78,7 @@ class Service_Thread_TCP(threading.Thread):
             self.connected = True
             while self.connected:
                 self.conn.setblocking(0)
-                self.conn.settimeout(.01)
-                try:
-                    data = self.conn.recv(1024).strip() # blocking until data
-                    if data:
-                        #print 'received', data
-                        self.rx_q.put(data)
-
-
-                    else: #client disconnects
-                        self.connected = False
-                except socket.error, v:
-                    errorcode=v[0]
-                    if errorcode =='timed out':
-                        pass
+                self.conn.settimeout(.001)
                 try:
                     if (not self.tx_q.empty()): #msg received for client
                         msg = self.tx_q.get()
@@ -101,20 +87,19 @@ class Service_Thread_TCP(threading.Thread):
                 except socket.error, v:
                     self.connected = False
 
+                try:
+                    data = self.conn.recv(1024).strip() # blocking until data
+                    if data:
+                        #print 'received', data
+                        self.rx_q.put(data)
+                    else: #client disconnects
+                        self.connected = False
+                except socket.error, v:
+                    errorcode=v[0]
+                    if errorcode =='timed out':
+                        pass
 
                 time.sleep(.1)
-            # except socket.error, v:
-            #     errorcode=v[0]
-            #     if errorcode==errno.EPIPE:  #Client disconnected
-            #         print 'Client Disconnected'
-            #         self.connected = False
-            #         self.conn.close()
-            #     #print errorcode
-            # except Exception as e:
-            #     print e
-            #     self.conn.close()
-            #     self.connected = False
-            # time.sleep(0.01)#needed to throttle
 
         time.sleep(1)
         self.conn.close()
