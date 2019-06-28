@@ -4,6 +4,7 @@
 
 import math, sys, os, time, struct, traceback, binascii, logging
 import datetime as dt
+import numpy as np
 
 class MyFormatter(logging.Formatter):
     #Overriding formatter for datetime
@@ -12,28 +13,41 @@ class MyFormatter(logging.Formatter):
         ct = self.converter(record.created)
         if datefmt:
             s = ct.strftime(datefmt)
-        else:
-            t = ct.strftime("%Y%m%dT%H:%M:%SZ")
-            s = "%s,%03d" % (t, record.msecs)
+        #else:
+        #    t = ct.strftime("%Y%m%dT%H:%M:%SZ")
+        #    s = "%s,%03d" % (t, record.msecs)
         return s
 
+def setup_logger(cfg):
+    if cfg['startup_ts'] == None: ts = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    else: ts = cfg['startup_ts']
+    name = cfg['name']
+    verbose = cfg['verbose']
+    path = cfg['path']
+    level = cfg['level']
+    file = "{:s}_{:s}.log".format(name, ts)
+    file_path = '/'.join([path, file])
 
-def setup_logger(log_name, path, level=logging.INFO, ts = None):
-    l = logging.getLogger(log_name)
-    if ts == None: ts = str(get_uptime())
-    log_file = "{:s}_{:s}.log".format(log_name, ts)
-    log_path = '/'.join([path, log_file])
-    #log_path = os.getcwd() + '/log/' + log_file
-    #print log_path
-    formatter = MyFormatter(fmt='%(asctime)s | %(threadName)s | %(levelname)s | %(message)s',datefmt='%Y-%m-%dT%H:%M:%S.%fZ')
-    #fileHandler = logging.FileHandler(log_path, mode='w')
-    fileHandler = logging.FileHandler(log_path)
+    #formatter = MyFormatter(fmt='%(asctime)s | %(threadName)8s | %(levelname)8s | %(message)s',datefmt='%Y-%m-%dT%H:%M:%S.%fZ')
+    #formatter = MyFormatter(fmt='[%(asctime)s][%(threadName)8s][%(levelname)8s] %(message)s',datefmt='%Y-%m-%dT%H:%M:%S.%fZ')
+    formatter = MyFormatter(fmt='[%(asctime)s | %(threadName)14s | %(levelname)8s] %(message)s',datefmt='%Y-%m-%dT%H:%M:%S.%fZ')
+    
+    log = logging.getLogger(name)
+    if   level == 'DEBUG'   : log.setLevel(logging.DEBUG)
+    elif level == 'INFO'    : log.setLevel(logging.INFO)
+    elif level == 'WARNING' : log.setLevel(logging.WARNING)
+    elif level == 'ERROR'   : log.setLevel(logging.ERROR)
+    elif level == 'CRITICAL': log.setLevel(logging.CRITICAL)
+
+    #Always setup file log
+    fileHandler = logging.FileHandler(file_path)
     fileHandler.setFormatter(formatter)
-    #streamHandler = logging.StreamHandler()
-    #streamHandler.setFormatter(formatter)
-    l.setLevel(level)
-    l.addHandler(fileHandler)
-    l.info('Logger Initialized')
-    #l.addHandler(streamHandler)
-    #return fileHandler
-    return l
+    log.addHandler(fileHandler)
+    #if desired, setup stdout logging
+    if verbose:
+        streamHandler = logging.StreamHandler(sys.stdout)
+        streamHandler.setFormatter(formatter)
+        log.addHandler(streamHandler)
+        print "STDOUT Logger Initialized, Switching to Stream Handler...."
+    log.info('Logger Initialized')
+    return log

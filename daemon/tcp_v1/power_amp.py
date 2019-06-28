@@ -25,15 +25,16 @@ import datetime
 import logging
 import numpy
 
-class md01(object):
+class VHF_UHF_Power_Amplifier(object):
     """docstring for ."""
-    def __init__ (self, cfg, logger, name='md01'):
-        self.cfg        = cfg
-        self.logger     = logger
-        self.name       = name
+    def __init__ (self, cfg, logger, parent = None):
+        self.cfg    = cfg
+        self.logger = logger
+        self.parent = parent
+        self.name   = self.cfg['name'].upper()+"_Interface"
 
-        print self._utc_ts() + "Initializing {:s} MD01 Interface".format(self.cfg['ssid'])
-        self.logger.info("Initializing {:s} MD01 Interface".format(self.cfg['ssid']))
+        print self._utc_ts() + "Initializing {:s} {:s} Interface".format(self.cfg['ssid'].upper(), self.name.upper())
+        self.logger.info("Initializing {:s} {:s} Interface".format(self.cfg['ssid'].upper(), self.name.upper())
 
         self.ip         = self.cfg['ip']        #IP Address of MD01 Controller
         self.port       = self.cfg['port']      #Port number of MD01 Controller
@@ -41,12 +42,6 @@ class md01(object):
         self.ssid       = self.cfg['ssid']
 
         self.connected  = False
-        self.cmd_az     = 0         #Commanded Azimuth, used in Set Position Command
-        self.cmd_el     = 0         #Commanded Elevation, used in Set Position command
-        self.cur_az     = 0         #  Current Azimuth, in degrees, from feedback
-        self.cur_el     = 0         #Current Elevation, in degrees, from feedback
-        self.ph         = 10        #  Azimuth Resolution, in pulses per degree, from feedback, default = 10
-        self.pv         = 10        #Elevation Resolution, in pulses per degree, from feedback, default = 10
         self.feedback   = ''        #Feedback data from socket
 
         self.status = {
@@ -64,7 +59,7 @@ class md01(object):
         for x in [0x57,0,0,0,0,0x0a,0,0,0,0,0x0a,0x2F,0x20]: self.set_cmd.append(x) #PH=PV=0x0a, 0x0a = 10, BIG-RAS/HR is 10 pulses per degree
 
     def _utc_ts(self):
-        return "{:s} | md01 | ".format(datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ'))
+        return "{:s} | amp  | ".format(datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ'))
 
     def connect(self):
         #connect to md01 controller

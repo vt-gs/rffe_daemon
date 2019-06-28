@@ -13,158 +13,216 @@
 
 import threading
 import time
-
+import datetime
+import json
 from logger import *
-import device_thread    #connection to PA or RF Front End
-import service_thread   #User interface to daemon
+from device_thread import *   #connection to PA or RF Front End
+from service_thread import *  #User interface to daemon
 
 class Main_Thread(threading.Thread):
-    def __init__ (self, cfg):
-        threading.Thread.__init__(self, name = 'Main_Thread')
+    """ docstring """
+    def __init__ (self, cfg, name):
+        #super(Main_Thread, self).__init__(name=name)
+        threading.Thread.__init__(self)
+        threading.current_thread().name = "Main_Thread"
+        self.setName("Main_Thread")
         self._stop      = threading.Event()
         self.cfg        = cfg
-        self.startup_ts = cfg['startup_ts']
-        self.log_path   = cfg['log_path']
-        self.log_level  = cfg['log_level']
-        self.ssid       = cfg['ssid']
 
-        self.state  = 'BOOT' #BOOT, STANDBY, ACTIVE, WX, FAULT
-        self.msg_cnt = 0
-        #setup logger
-        self.main_log_fh = setup_logger(self.ssid, level= self.log_level, ts=self.startup_ts, log_path=self.log_path)
-        self.logger = logging.getLogger(self.ssid) #main logger
+
+
+
+        self.main_log_fh = setup_logger(self.cfg['main_log'])
+        self.logger = logging.getLogger(self.cfg['main_log']['name']) #main logger
+        self.logger.info("configs: {:s}".format(json.dumps(self.cfg)))
+
+        self.state  = 'BOOT' #BOOT, IDLE, STANDBY, ACTIVE, FAULT, CALIBRATE
+        self.state_map = {
+            'BOOT':0x00,        #bootup
+            'IDLE':0x01,        #threads launched, no connections, attempt md01 connect
+            'RX':0x02,          #client connected, device connected, Start loggers
+            'TX':0x04,          #client sent PTT!
+            'CALIBRATE':0x08,   #calibration mode, future use
+            'FAULT':0x80        #some kind of fault has occured
+        }
+
+        self.service_con = False #Connection Status, Service Thread
+        self.device_con  = False #Connection Status, Device Thread
+        self.session_id  = None  #Session ID
+
 
     def run(self):
-        print "{:s} Started...".format(self.name)
         self.logger.info('Launched {:s}'.format(self.name))
         try:
             while (not self._stop.isSet()):
                 if self.state == 'BOOT':
                     self._handle_state_boot()
-                elif self.state == 'STANDBY':
-                    self._handle_state_standby()
-                elif self.state == 'ACTIVE':
-                    self._handle_state_active()
-                elif self.state == 'WX':
-                    self._handle_state_wx()
                 elif self.state == 'FAULT':
                     self._handle_state_fault()
-                time.sleep(0.01) #Needed to throttle CPU
+                else:# NOT in BOOT or FAULT state
+                    if self.state == 'IDLE':  self._handle_state_idle()
+                    elif self.state == 'RX':  self._handle_state_rx()
+                    elif self.state == 'TX':  self._handle_state_tx()
+                    elif self.state == 'CALIBRATE':  self._handle_state_calibrate()
 
-        except (KeyboardInterrupt, SystemExit): #when you press ctrl+c
-            self._handle_state_terminating()
+        except (KeyboardInterrupt): #when you press ctrl+c
+            self.logger.warning('Caught CTRL-C, Terminating Threads...')
+            self._stop_threads()
+            self.logger.warning('Terminating Main Thread...')
+            sys.exit()
+        except SystemExit:
+            self.logger.warning('Terminating Main Thread...')
         sys.exit()
 
-    def _send_service_resp(self,msg):
-        self.service_thread._send_resp(msg)
 
-    def _handle_state_terminating(self):
-        print "\nCaught CTRL-C, Killing Threads..."
-        self.logger.warning('Caught CTRL-C, Terminating Threads...')
-        #self.relay_thread.stop()
-        #self.relay_thread.join() # wait for the thread to finish what it's doing
-        self.service_thread.stop()
-        #self.service_thread.join() # wait for the thread to finish what it's doing
-        self.logger.warning('Terminating {:s}...'.format(self.name))
-        sys.exit()
+    #---- STATE HANDLERS -----------------------------------
+    def _handle_state_tx(self):
+        if ((not self.service_con) or (not self.device_con)):
+            #Client or Device disconnected
+            if not self.device_con: #Service Thread Disconnected
+                self.logger.warning("Device disconnected during TX State.....could be stuck in TX Mode")
+            #Fallback to IDLE state
+            self._set_state('RX')
 
-    def _handle_state_boot(self):
-        #Daemon activating for the first time
-        #Activate all threads
-        #State Change:  BOOT --> STANDBY
-        #All Threads Started
-        if self._init_threads():#if all threads activate succesfully
-            self.set_state('STANDBY', 'Successfully Launched Threads')
-        else:
-            self.set_state('FAULT', 'Failed to Launch Threads')
+    def _handle_state_rx(self):
+        if ((not self.service_con) or (not self.device_con)):
+            #stop child thread loggers
+            self._stop_thread_logging()
+            #Fallback to IDLE state
+            self._set_state('IDLE')
 
-    def _handle_state_standby(self):
-        if self.service_thread.get_connection_state():
-            self.set_state('ACTIVE', 'Client Connection to Service Thread')
-            #self.set_state('FAULT', 'Service Thread Not connected to Broker')
+        self._check_thread_queues()
+        pass
 
-        #if (not self.tx_q.empty()): #received a messages
-            #msg = self.tx_q.get()
-        #msg = '[{:d}] test'.format(self.msg_cnt)
-        #print "TX MSG:", msg
-        #self.service_thread.tx_q.put(msg)
-        #self.producer.send(msg, self.cfg['produce_key'])
-        #self.msg_cnt += 1
+    def _handle_state_idle(self):
+        if ((self.service_con) and (self.device_con)): #Client and Device connected
+            #start child thread loggers
+            self._start_thread_logging()
+            #Move into RX State
+            self._set_state('RX')
 
-    def _handle_state_active(self):
-        #Describe ACTIVE here
-        if (not self.service_thread.rx_q.empty()): #msg received from client
-            msg = self.service_thread.rx_q.get()
-            print '{:s} | Service Thread RX Message: {:s}'.format(self.name, msg)
-            self.rffe_thread.tx_q.put(msg)
-
-        if (not self.rffe_thread.rx_q.empty()): #msg received from client
-            fb_msg = self.rffe_thread.rx_q.get()
-            print '{:s} | RFFE Thread RX Message: {:s}'.format(self.name, fb_msg)
-            self.service_thread.tx_q.put(fb_msg)
-
-        if (not self.service_thread.get_connection_state()):
-            self.set_state('STANDBY', 'client disconnected')
-            #self.relay_thread.tx_q.put(msg)
-        #print "Querying relays"
-        #rel_state, rel_int = self.relay_thread.read_all_relays()
-        #print rel_state, rel_int
-        #time.sleep(1)
-
-    def _handle_state_wx(self):
+    def _handle_state_calibrate(self):
         pass
 
     def _handle_state_fault(self):
-        #if self.service_thread.connected:
-        #    self.set_state('STANDBY', 'Service Thread reconnected to Broker')
+        self.logger.warning("in FAULT state, exiting.......")
+        self.logger.warning("Do Something Smarter.......")
+        sys.exit()
+
+    def _handle_state_boot(self):
+        if self._init_threads():#if all threads activate succesfully
+            self.logger.info('Successfully Launched Threads, Switching to IDLE State')
+            self._set_state('IDLE')
+            time.sleep(1)
+        else:
+            self.logger.info('Failed to Launched Threads...')
+            self._set_state('FAULT')
+
+    #---- END STATE HANDLERS -----------------------------------
+    ###############################################################
+    #---- CHILD THREAD COMMS HANDLERS & CALLBACKS ----------------------------
+    def _check_con_status(self):
+        if self.state == 'IDLE': #Daemon is in IDLE
+            if self.md01_con == False: #MD01 is not connected
+                if ((self.state == 'STANDBY') or (self.state == 'ACTIVE')):
+                    self._set_state('IDLE')
+        elif self.user_con == False: #user is not connected
+            if ((self.state == 'STANDBY') or (self.state == 'ACTIVE')):
+                self.md01_thread.set_stop()
+                self._set_state('IDLE')
+
+
+    def set_service_con_status(self, status):
+        self.user_con = status
+
+    def set_service_con_status(self, status):
+        self.md01_con = status
+
+    def _check_thread_queues(self):
+        #check for service message
+        if (self.cfg['thread_enable']['service'] and (not self.service_thread.rx_q.empty())): #Received a message from user
+            msg = self.service_thread.rx_q.get()
+            print self._utc_ts() + '{:s} | Service Thread RX Message: {:s}'.format(self.name, msg)
+            self._process_service_message(msg)
+        #check for device message
+        if (self.cfg['thread_enable']['device'] and (not self.device_thread.rx_q.empty())):
+            msg = self.device_thread.rx_q.get()
+            print self._utc_ts() + '{:s} | Device Thread RX Message: {:s}'.format(self.name, msg)
+            self._process_device_message(msg)
+
+    def _handle_service_message(self, msg):
         pass
 
-    def set_state(self, state, msg=None):
+    def _send_service_response(self,msg):
+        self.service_thread.tx_q.put(msg)
+    #---- END CHILD THREAD COMMS HANDLERS & CALLBACKS ----------------------------
+    ###############################################################
+    #---- THREAD CONTROLS -----------------------------------
+    def _start_thread_logging(self, ts, session_id):
+        ts = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        self.service_thread.start_logging(ts, session_id)
+        self.device_thread.start_logging(ts, session_id)
+        pass
+
+    def _stop_thread_logging(self):
+        self.service_thread.stop_logging()
+        self.device_thread.stop_logging()
+
+    #---- END THREAD CONTROLS -----------------------------------
+    ###############################################################
+    #---- MAIN THREAD CONTROLS -----------------------------------
+    def _set_state(self, state):
         self.state = state
-        self.logger.info(msg)
+        self.logger.info("Connection Status (CLIENT/DEVICE): {0}/{1}".format(self.service_con, self.device_con))
         self.logger.info('Changed STATE to: {:s}'.format(self.state))
-        if self.state == 'BOOT':
-            pass
-        if self.state == 'STANDBY':
-            pass
-        if self.state == 'ACTIVE':
-            time.sleep(1)
-        if self.state == 'WX':
-            pass
-        if self.state == 'FAULT':
-            pass
-            time.sleep(1)
-        if self.state == 'TERMINATING':
-            pass
 
     def _init_threads(self):
         try:
-            #Initialize RFFE Thread
-            self.logger.info('Setting up RFFE_Thread')
-            print self.cfg['rffe']
-            self.rffe_thread = device_thread.VHF_UHF_Thread(self.ssid, self.cfg['rffe'])
-            self.rffe_thread.daemon = True
-
-            #Initialize Server Thread
-            self.logger.info('Setting up TCP Service_Thread')
-            self.service_thread = service_thread.Service_Thread_TCP(self.ssid, self.cfg['tcp_service'])
-            self.service_thread.daemon = True
-
+            #Initialize Threads
+            #print 'thread_enable', self.thread_enable
+            self.logger.info("Thread enable: {:s}".format(json.dumps(self.cfg['thread_enable'])))
+            for key in self.cfg['thread_enable'].keys():
+                if self.cfg['thread_enable'][key]:
+                    if key == 'service': #Initialize Service Thread
+                        self.logger.info('Setting up Service Thread')
+                        if self.cfg['service']['type'] == "TCP":
+                            self.service_thread = Service_Thread_TCP(self.cfg['service'], self) #Service Thread
+                        self.service_thread.daemon = True
+                    elif key == 'device': #Initialize Device Thread
+                        self.logger.info('Setting up Device Thread')
+                        self.device_thread = device_thread.VHF_UHF_PA_Thread(self.ssid, self.cfg['device'])
+                        self.device_thread.daemon = True
             #Launch threads
-            self.logger.info('Launching RFFE_Thread')
-            self.rffe_thread.start() #non-blocking
-
-            self.logger.info('Launching Service_Thread')
-            self.service_thread.start() #non-blocking
-
-            time.sleep(2)
+            for key in self.cfg['thread_enable'].keys():
+                if self.cfg['thread_enable'][key]:
+                    if key == 'service': #Start Service Thread
+                        self.logger.info('Launching Service Thread...')
+                        self.service_thread.start() #non-blocking
+                    elif key == 'device': #Start Device
+                        self.logger.info('Launching Device Thread...')
+                        self.device_thread.start() #non-blocking
             return True
         except Exception as e:
-            self.logger.warning('Error Launching Threads:')
-            self.logger.warning(str(e))
+            self.logger.error('Error Launching Threads:', exc_info=True)
             self.logger.warning('Setting STATE --> FAULT')
-            self.state = 'FAULT'
+            self._set_state('FAULT')
             return False
+
+    def _stop_threads(self):
+        #stop all threads
+        for key in self.cfg['thread_enable'].keys():
+            if self.cfg['thread_enable'][key]:
+                if key == 'service':
+                    self.service_thread.stop()
+                    self.logger.warning("Terminated Service Thread.")
+                    #self.service_thread.join() # wait for the thread to finish what it's doing
+                elif key == 'device': #Initialize Radio Thread
+                    self.device_thread.stop_thread()
+                    self.logger.warning("Terminated Device Thread...")
+                    #self.md01_thread.join() # wait for the thread to finish what it's doing
+
+    def _utc_ts(self):
+        return "{:s} | main | ".format(datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ'))
 
     def stop(self):
         print '{:s} Terminating...'.format(self.name)
@@ -173,3 +231,5 @@ class Main_Thread(threading.Thread):
 
     def stopped(self):
         return self._stop.isSet()
+    #---- END MAIN THREAD CONTROLS -----------------------------------
+    ###############################################################

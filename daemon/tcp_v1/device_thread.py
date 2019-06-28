@@ -18,25 +18,29 @@ import binascii
 
 from Queue import Queue
 
-class VHF_UHF_Thread(threading.Thread):
-    def __init__ (self, ssid, cfg):
-        threading.Thread.__init__(self, name = 'RFFE_Thread')
-        self._stop      = threading.Event()
-        self.cfg        = cfg
-        self.ssid       = ssid
+class VHF_UHF_PA_Thread(threading.Thread):
+    def __init__ (self, cfg, logger, parent=None):
+        threading.Thread.__init__(self, name = None)
+        self._stop  = threading.Event()
+        self.cfg    = cfg
+        self.logger = logger
+        self.parent = parent
+        self.name   = self.cfg['name'].upper()+"_Thread"
 
-        self.logger     = logging.getLogger(self.ssid)
         print "Initializing {}".format(self.name)
         self.logger.info("Initializing {}".format(self.name))
 
-        self.connected  = False
+
+        self.ssid   = self.cfg['ssid']
+        self.delay  = self.cfg['delay']
+
+        self.device = VHF_UHF_Power_Amplifier(cfg, logger, self)
+
         self.tx_q       = Queue() #messages into thread
         self.rx_q       = Queue() #messages from thread
-
-
-
-        self.timeout = 1
         self.timer = threading.Timer(self.timeout, self._timer_handler)
+
+        self.connected  = False
 
     def run(self):
         print "{:s} Started...".format(self.name)
