@@ -1,0 +1,13 @@
+{
+    "ssid":"VU",
+    "log_path":"/log/rffed",
+    "log_level":"DEBUG",
+    "tcp_service":{
+        "ip":"0.0.0.0",
+        "port":9000
+    },
+    "rffe":{
+        "ip":"0.0.0.0",
+        "port":9001
+    }
+}
