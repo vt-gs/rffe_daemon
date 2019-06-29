@@ -62,7 +62,7 @@ def main():
         json_data.close()
     cfg['startup_ts'] = startup_ts
 
-    log_name = '_'.join([cfg['ssid'],cfg['daemon_name']])
+    log_name = '.'.join([cfg['ssid'],cfg['daemon_name'],'main'])
     cfg['main_log'].update({
         "path":cfg['log_path'],
         "name":log_name,

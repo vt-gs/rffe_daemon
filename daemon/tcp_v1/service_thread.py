@@ -13,7 +13,7 @@ import threading
 import time
 import socket
 import errno
-import pika
+import json
 
 from Queue import Queue
 from logger import *
@@ -47,57 +47,99 @@ class Service_Thread_TCP(threading.Thread):
         self.tx_q   = Queue() #Messages sent to client, feedback
 
         self.connected = False
-
         self.logger.info("Initializing {}".format(self.name))
+
+        self.data_logger = None
 
     def run(self):
         self.logger.info('Launched {:s}'.format(self.name))
-
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM) #TCP Socket, initialize
+        self.logger.debug("Setup socket")
+        self.logger.info("Attempting to connect to flowgraph: [{:s}, {:d}]".format(self.cfg['ip'], self.cfg['port']))
         while (not self._stop.isSet()):
-            self.logger.info("Setting up socket...")
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            #self.sock.setblocking(0)
-            #self.sock.settimeout(1)
-            self.sock.bind((self.cfg['ip'], self.cfg['port']))
-            self.sock.listen(1) #blocking until client connects
-            self.logger.info("Server listening on: [{:s}:{:d}]".format(self.cfg['ip'], self.cfg['port']))
-
-            self.conn, self.client = self.sock.accept()
-            self.logger.info("Connection from client: [{:s}:{:d}]".format(self.client[0], self.client[1]))
-            self.connected = True
-            while self.connected:
-                self.conn.setblocking(0)
-                self.conn.settimeout(.001)
+            if not self.connected:
                 try:
-                    if (not self.tx_q.empty()): #msg received for client
-                        msg = self.tx_q.get()
-                        print 'Sending Message to client: {:s}'.format(msg)
-                        self.conn.sendall(msg)
-                except socket.error, v:
-                    self.connected = False
-
-                try:
-                    data = self.conn.recv(1024).strip() # blocking until data
-                    if data:
-                        #print 'received', data
-                        self.rx_q.put(data)
-                    else: #client disconnects
+                    self._attempt_connect()
+                except socket.error, e:
+                    if e.errno == errno.ECONNREFUSED:
                         self.connected = False
-                except socket.error, v:
-                    errorcode=v[0]
-                    if errorcode =='timed out':
-                        pass
+                        time.sleep(self.cfg['retry_time'])
+                    else:
+                        self._handle_socket_exception(e)
+            else:
+                try:
+                    data = self.sock.recvfrom(1024)
+                    if not data[0]: self._handle_EOF()
+                    else:           self._handle_recv_data(data[0])
+                except socket.timeout, e: #Expected after connection
+                    self._handle_socket_timeout()
+                except Exception as e:
+                    self._handle_socket_exception(e)
 
-                time.sleep(.1)
-
-        time.sleep(1)
-        self.conn.close()
+        self.sock.close()
         self.logger.warning('{:s} Terminated'.format(self.name))
         #sys.exit()
 
-    def get_connection_state(self):
-        return self.connected
+    def start_logging(self, ts, session_id):
+        cfg = copy.deepcopy(self.cfg)
+        cfg['name'] = ".".join([cfg['main_log'],cfg['name']])
+        print cfg
+        self.logger.info("Setting up Service Data Logger")
+        pass
+
+    def stop_logging(self):
+        pass
+
+    #### Socket and Connection Handlers ###########
+    def _handle_socket_timeout(self):
+        if self.connected:
+            if not self.tx_q.empty():
+                tx_msg = self.tx_q.get()
+                self.sock.sendall(tx_msg)
+
+    def _attempt_connect(self):
+        self.sock.connect((self.cfg['ip'], self.cfg['port']))
+        self.logger.info("Connected to flowgraph: [{:s}, {:d}]".format(self.cfg['ip'], self.cfg['port']))
+        time.sleep(0.01)
+        self.sock.settimeout(self.cfg['timeout'])   #set socket timeout
+        self.connected = True
+        self.parent.set_service_con_status(self.connected)
+
+    def _handle_EOF(self):
+        self.logger.info("Disconnected from flowgraph")
+        self.sock.close()
+        self.connected = False
+        self.parent.set_service_con_status(self.connected)
+        self._init_socket()
+
+    def _handle_recv_data(self, data):
+        try:
+            json_data = json.loads(data.strip())
+            self.logger.info("Received Valid JSON PTT: {:s}".format(data.strip()))
+            if self.data_logger != None:
+                self.data_logger.info(json_data)
+            #print json.dumps(json.loads(data.strip()), indent=4)
+            #DO MORE VALIDATION HERE
+            #self.parent.ptt_received(json_data)
+            self.rx_q.put(json_data)
+            #ECHO PTT Back to Flowgraph
+            #May change to send PA TM to FG for display
+            self.tx_q.put(json.dumps(json_data)) #ECHO PTT Back to Flowgraph
+        except Exception as e:
+            self.logger.info("Received Invalid JSON PTT: {:s}".format(data.strip()))
+
+    def _init_socket(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM) #TCP Socket
+        self.logger.debug("Reset socket")
+
+    def _handle_socket_exception(self, e):
+        self.logger.debug("Unhandled Socket error, resetting connection...")
+        self.logger.debug(sys.exc_info())
+        self.sock.close()
+        self.connected = False
+        self.parent.set_service_con_status(self.connected)
+    #### END Socket and Connection Handlers ###########
+
 
     def stop(self):
         #self.conn.close()

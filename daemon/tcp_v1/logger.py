@@ -25,13 +25,13 @@ def setup_logger(cfg):
     verbose = cfg['verbose']
     path = cfg['path']
     level = cfg['level']
-    file = "{:s}_{:s}.log".format(name, ts)
+    file = "{:s}.{:s}.log".format(name, ts)
     file_path = '/'.join([path, file])
 
     #formatter = MyFormatter(fmt='%(asctime)s | %(threadName)8s | %(levelname)8s | %(message)s',datefmt='%Y-%m-%dT%H:%M:%S.%fZ')
     #formatter = MyFormatter(fmt='[%(asctime)s][%(threadName)8s][%(levelname)8s] %(message)s',datefmt='%Y-%m-%dT%H:%M:%S.%fZ')
     formatter = MyFormatter(fmt='[%(asctime)s | %(threadName)14s | %(levelname)8s] %(message)s',datefmt='%Y-%m-%dT%H:%M:%S.%fZ')
-    
+
     log = logging.getLogger(name)
     if   level == 'DEBUG'   : log.setLevel(logging.DEBUG)
     elif level == 'INFO'    : log.setLevel(logging.INFO)

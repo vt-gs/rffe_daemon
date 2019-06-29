@@ -15,6 +15,8 @@ import threading
 import time
 import datetime
 import json
+import numpy
+import uuid
 from logger import *
 from device_thread import *   #connection to PA or RF Front End
 from service_thread import *  #User interface to daemon
@@ -29,10 +31,7 @@ class Main_Thread(threading.Thread):
         self._stop      = threading.Event()
         self.cfg        = cfg
 
-
-
-
-        self.main_log_fh = setup_logger(self.cfg['main_log'])
+        self.logger = setup_logger(self.cfg['main_log'])
         self.logger = logging.getLogger(self.cfg['main_log']['name']) #main logger
         self.logger.info("configs: {:s}".format(json.dumps(self.cfg)))
 
@@ -49,6 +48,8 @@ class Main_Thread(threading.Thread):
         self.service_con = False #Connection Status, Service Thread
         self.device_con  = False #Connection Status, Device Thread
         self.session_id  = None  #Session ID
+
+        #self.ptt_timer = self.timer = threading.Timer(self.timeout, self.handler)
 
 
     def run(self):
@@ -81,6 +82,7 @@ class Main_Thread(threading.Thread):
             #Client or Device disconnected
             if not self.device_con: #Service Thread Disconnected
                 self.logger.warning("Device disconnected during TX State.....could be stuck in TX Mode")
+                self.logger.warning("May want to Power Cycle Device!")
             #Fallback to IDLE state
             self._set_state('RX')
 
@@ -90,14 +92,16 @@ class Main_Thread(threading.Thread):
             self._stop_thread_logging()
             #Fallback to IDLE state
             self._set_state('IDLE')
-
-        self._check_thread_queues()
+        self._check_thread_queues() #Check for messages from threads
         pass
 
     def _handle_state_idle(self):
+        self._check_thread_queues() #Check for messages from threads
         if ((self.service_con) and (self.device_con)): #Client and Device connected
+            session_id = uuid.uuid64()
+            ts = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
             #start child thread loggers
-            self._start_thread_logging()
+            self._start_thread_logging(ts, session_id)
             #Move into RX State
             self._set_state('RX')
 
@@ -121,37 +125,42 @@ class Main_Thread(threading.Thread):
     #---- END STATE HANDLERS -----------------------------------
     ###############################################################
     #---- CHILD THREAD COMMS HANDLERS & CALLBACKS ----------------------------
-    def _check_con_status(self):
-        if self.state == 'IDLE': #Daemon is in IDLE
-            if self.md01_con == False: #MD01 is not connected
-                if ((self.state == 'STANDBY') or (self.state == 'ACTIVE')):
-                    self._set_state('IDLE')
-        elif self.user_con == False: #user is not connected
-            if ((self.state == 'STANDBY') or (self.state == 'ACTIVE')):
-                self.md01_thread.set_stop()
-                self._set_state('IDLE')
+    def set_service_con_status(self, status): #called by service thread
+        self.service_con = status
 
+    def set_service_con_status(self, status): #called by device thread
+        self.device_con = status
 
-    def set_service_con_status(self, status):
-        self.user_con = status
-
-    def set_service_con_status(self, status):
-        self.md01_con = status
+    def ptt_received(self, ptt_msg):
+        #print json.dumps(ptt_msg, indent=4)
+        ts = numpy.datetime64(ptt_msg['uhd']['tx_datetime64'])
+        self.sec_to_tx = (numpy.datetime64(datetime.datetime.utcnow()) - ts).item()*1e-9
+        if self.state == 'RX':
+            self._set_state('TX')
+        elif self.state == 'TX':
+            self.logger.info('Already in TX, resetting PTT Watchdog')
+        else:
+            self.logger.info('Not in TX or RX Mode, ignoring....')
 
     def _check_thread_queues(self):
         #check for service message
         if (self.cfg['thread_enable']['service'] and (not self.service_thread.rx_q.empty())): #Received a message from user
             msg = self.service_thread.rx_q.get()
-            print self._utc_ts() + '{:s} | Service Thread RX Message: {:s}'.format(self.name, msg)
             self._process_service_message(msg)
         #check for device message
         if (self.cfg['thread_enable']['device'] and (not self.device_thread.rx_q.empty())):
             msg = self.device_thread.rx_q.get()
-            print self._utc_ts() + '{:s} | Device Thread RX Message: {:s}'.format(self.name, msg)
             self._process_device_message(msg)
 
-    def _handle_service_message(self, msg):
-        pass
+    def _process_service_message(self, msg):
+        ts = numpy.datetime64(msg['uhd']['tx_datetime64'])
+        self.sec_to_tx = (numpy.datetime64(datetime.datetime.utcnow()) - ts).item()*1e-9
+        if self.state == 'RX':
+            self._set_state('TX')
+        elif self.state == 'TX':
+            self.logger.info('Already in TX, resetting PTT Watchdog')
+        else:
+            self.logger.info('Not in TX or RX Mode, ignoring service message....')
 
     def _send_service_response(self,msg):
         self.service_thread.tx_q.put(msg)
@@ -159,9 +168,10 @@ class Main_Thread(threading.Thread):
     ###############################################################
     #---- THREAD CONTROLS -----------------------------------
     def _start_thread_logging(self, ts, session_id):
-        ts = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        self.service_thread.start_logging(ts, session_id)
-        self.device_thread.start_logging(ts, session_id)
+        if self.cfg['thread_enable']['service']:
+            self.service_thread.start_logging(ts, session_id)
+        if self.cfg['thread_enable']['service']:
+            self.device_thread.start_logging(ts, session_id)
         pass
 
     def _stop_thread_logging(self):
@@ -172,6 +182,8 @@ class Main_Thread(threading.Thread):
     ###############################################################
     #---- MAIN THREAD CONTROLS -----------------------------------
     def _set_state(self, state):
+        #if ((self.state == 'IDLE') and (state == 'RX')):
+            #GOING FROM IDLE TO RX
         self.state = state
         self.logger.info("Connection Status (CLIENT/DEVICE): {0}/{1}".format(self.service_con, self.device_con))
         self.logger.info('Changed STATE to: {:s}'.format(self.state))

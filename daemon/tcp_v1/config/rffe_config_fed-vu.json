@@ -13,15 +13,17 @@
     "service":{
         "thread_name":"Service_Thread",
         "type":"TCP",
+        "name":"service",
         "ip":"0.0.0.0",
         "port":8001,
-        "timeout": 5.0
+        "retry_time":5.0,
+        "timeout":0.01
     },
     "device":{
         "thread_name":"Amp_Thread",
         "name":"amp",
         "ip":"0.0.0.0",
-        "port":9001,
-        "delay":0.3
+        "port":8002,
+        "hang_time":0.50
     }
 }
