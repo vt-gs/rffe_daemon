@@ -70,11 +70,18 @@ def main():
     })
 
     for key in cfg['thread_enable'].keys():
+        cfg[key].update({'log':{}})
+        log_name =  '.'.join([cfg['ssid'],cfg['daemon_name'],cfg[key]['name']])
         cfg[key].update({
             'ssid':cfg['ssid'],
-            'log_path':cfg['log_path'],
-            'main_log':log_name,
-            'startup_ts':startup_ts
+            'main_log':cfg['main_log']['name']
+        })
+        cfg[key]['log'].update({
+            'path':cfg['log_path'],
+            'name':log_name,
+            'startup_ts':startup_ts,
+            'verbose':cfg['main_log']['verbose'],
+            'level':cfg['main_log']['level']
         })
 
     print json.dumps(cfg, indent=4)

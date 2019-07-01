@@ -17,9 +17,11 @@ import datetime
 import json
 import numpy
 import uuid
+
 from logger import *
 from device_thread import *   #connection to PA or RF Front End
 from service_thread import *  #User interface to daemon
+from watchdog_timer import *
 
 class Main_Thread(threading.Thread):
     """ docstring """
@@ -31,7 +33,7 @@ class Main_Thread(threading.Thread):
         self._stop      = threading.Event()
         self.cfg        = cfg
 
-        self.logger = setup_logger(self.cfg['main_log'])
+        setup_logger(self.cfg['main_log'])
         self.logger = logging.getLogger(self.cfg['main_log']['name']) #main logger
         self.logger.info("configs: {:s}".format(json.dumps(self.cfg)))
 
@@ -50,6 +52,7 @@ class Main_Thread(threading.Thread):
         self.session_id  = None  #Session ID
 
         #self.ptt_timer = self.timer = threading.Timer(self.timeout, self.handler)
+        self.ptt = False
 
 
     def run(self):
@@ -65,6 +68,7 @@ class Main_Thread(threading.Thread):
                     elif self.state == 'RX':  self._handle_state_rx()
                     elif self.state == 'TX':  self._handle_state_tx()
                     elif self.state == 'CALIBRATE':  self._handle_state_calibrate()
+                time.sleep(0.000001)
 
         except (KeyboardInterrupt): #when you press ctrl+c
             self.logger.warning('Caught CTRL-C, Terminating Threads...')
@@ -75,7 +79,6 @@ class Main_Thread(threading.Thread):
             self.logger.warning('Terminating Main Thread...')
         sys.exit()
 
-
     #---- STATE HANDLERS -----------------------------------
     def _handle_state_tx(self):
         if ((not self.service_con) or (not self.device_con)):
@@ -85,25 +88,17 @@ class Main_Thread(threading.Thread):
                 self.logger.warning("May want to Power Cycle Device!")
             #Fallback to IDLE state
             self._set_state('RX')
+        self._check_thread_queues()
 
     def _handle_state_rx(self):
         if ((not self.service_con) or (not self.device_con)):
-            #stop child thread loggers
-            self._stop_thread_logging()
-            #Fallback to IDLE state
             self._set_state('IDLE')
         self._check_thread_queues() #Check for messages from threads
-        pass
 
     def _handle_state_idle(self):
-        self._check_thread_queues() #Check for messages from threads
         if ((self.service_con) and (self.device_con)): #Client and Device connected
-            session_id = uuid.uuid64()
-            ts = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            #start child thread loggers
-            self._start_thread_logging(ts, session_id)
-            #Move into RX State
             self._set_state('RX')
+        self._check_thread_queues() #Check for messages from threads
 
     def _handle_state_calibrate(self):
         pass
@@ -122,25 +117,72 @@ class Main_Thread(threading.Thread):
             self.logger.info('Failed to Launched Threads...')
             self._set_state('FAULT')
 
+    def _set_state(self, state):
+        if ((self.state == 'IDLE') and (state == 'RX')):
+            #IDLE-->RX
+            pass
+        elif ((self.state == 'RX') and (state == 'TX')):
+            #RX-->TX, Start PTT Watchdog
+            self._send_device_msg(self.ptt_msg['ptt_mode'])
+            self.ptt_watchdog = Watchdog(self.ptt_msg['sec_to_rx'], 'PTT Watchdog', self._ptt_watchdog_expired)
+            self.ptt_watchdog.start()
+            self.logger.info('Started PTT Watchdog: {:3.9f}'.format(self.ptt_msg['sec_to_rx']))
+            pass
+        elif ((self.state == 'TX') and (state == 'TX')):
+            #TX-->TX, reset PTT watchdog
+            self.ptt_watchdog.reset(self.ptt_msg['sec_to_rx'])
+            self.logger.info('Reset PTT Watchdog: {:3.9f}'.format(self.ptt_msg['sec_to_rx']))
+            pass
+        elif ((self.state == 'TX') and (state == 'RX')):
+            #TX-->RX, stop PTT watchdog
+            #self.ptt_watchdog.stop()
+            self._send_device_msg('RX')
+            pass
+        elif ((self.state == 'RX') and (state == 'IDLE')):
+            #RX-->IDLE
+            pass
+        self.state = state
+
+        self.logger.info('Changed STATE to: {:s}'.format(self.state))
+
+    def _ptt_watchdog_expired(self):
+        self.logger.info('PTT Watchdog Expired')
+        self._set_state('RX')
+
+    def _send_device_msg(self,msg):
+        self.logger.info('Sent Signal to {:s}: {:s}'.format(self.cfg['device']['name'], msg))
+        self.device_thread.tx_q.put(msg)
+
+
     #---- END STATE HANDLERS -----------------------------------
     ###############################################################
     #---- CHILD THREAD COMMS HANDLERS & CALLBACKS ----------------------------
+    def _process_service_message(self, msg):
+        self.ptt_msg = msg
+        ts = numpy.datetime64(self.ptt_msg['uhd']['tx_datetime64'])
+        #sec_to_tx = (ts - numpy.datetime64(datetime.datetime.utcnow())).item()*1e-9
+        #burst_sec = self.ptt_msg['burst_sec']
+        #sec_to_rx = sec_to_tx + burst_sec
+        self.ptt_msg.update({
+            'sec_to_tx':(ts - numpy.datetime64(datetime.datetime.utcnow())).item()*1e-9,
+            'burst_sec':self.ptt_msg['burst_sec']
+        })
+        self.cfg['device']['hang_time']
+        self.ptt_msg.update({
+            'sec_to_rx':self.ptt_msg['sec_to_tx']+self.ptt_msg['burst_sec'] + self.cfg['device']['hang_time']
+        })
+        if ((self.state == 'RX') or (self.state == 'TX')):
+            self._set_state('TX')
+        else:
+            self.logger.info('Not in TX or RX Mode, ignoring service message....')
+
     def set_service_con_status(self, status): #called by service thread
         self.service_con = status
+        self.logger.info("Connection Status (CLIENT/DEVICE): {0}/{1}".format(self.service_con, self.device_con))
 
-    def set_service_con_status(self, status): #called by device thread
+    def set_device_con_status(self, status): #called by device thread
         self.device_con = status
-
-    def ptt_received(self, ptt_msg):
-        #print json.dumps(ptt_msg, indent=4)
-        ts = numpy.datetime64(ptt_msg['uhd']['tx_datetime64'])
-        self.sec_to_tx = (numpy.datetime64(datetime.datetime.utcnow()) - ts).item()*1e-9
-        if self.state == 'RX':
-            self._set_state('TX')
-        elif self.state == 'TX':
-            self.logger.info('Already in TX, resetting PTT Watchdog')
-        else:
-            self.logger.info('Not in TX or RX Mode, ignoring....')
+        self.logger.info("Connection Status (CLIENT/DEVICE): {0}/{1}".format(self.service_con, self.device_con))
 
     def _check_thread_queues(self):
         #check for service message
@@ -152,42 +194,12 @@ class Main_Thread(threading.Thread):
             msg = self.device_thread.rx_q.get()
             self._process_device_message(msg)
 
-    def _process_service_message(self, msg):
-        ts = numpy.datetime64(msg['uhd']['tx_datetime64'])
-        self.sec_to_tx = (numpy.datetime64(datetime.datetime.utcnow()) - ts).item()*1e-9
-        if self.state == 'RX':
-            self._set_state('TX')
-        elif self.state == 'TX':
-            self.logger.info('Already in TX, resetting PTT Watchdog')
-        else:
-            self.logger.info('Not in TX or RX Mode, ignoring service message....')
-
-    def _send_service_response(self,msg):
+    def _process_device_message(self, msg):
         self.service_thread.tx_q.put(msg)
+
     #---- END CHILD THREAD COMMS HANDLERS & CALLBACKS ----------------------------
     ###############################################################
-    #---- THREAD CONTROLS -----------------------------------
-    def _start_thread_logging(self, ts, session_id):
-        if self.cfg['thread_enable']['service']:
-            self.service_thread.start_logging(ts, session_id)
-        if self.cfg['thread_enable']['service']:
-            self.device_thread.start_logging(ts, session_id)
-        pass
-
-    def _stop_thread_logging(self):
-        self.service_thread.stop_logging()
-        self.device_thread.stop_logging()
-
-    #---- END THREAD CONTROLS -----------------------------------
-    ###############################################################
     #---- MAIN THREAD CONTROLS -----------------------------------
-    def _set_state(self, state):
-        #if ((self.state == 'IDLE') and (state == 'RX')):
-            #GOING FROM IDLE TO RX
-        self.state = state
-        self.logger.info("Connection Status (CLIENT/DEVICE): {0}/{1}".format(self.service_con, self.device_con))
-        self.logger.info('Changed STATE to: {:s}'.format(self.state))
-
     def _init_threads(self):
         try:
             #Initialize Threads
@@ -202,7 +214,7 @@ class Main_Thread(threading.Thread):
                         self.service_thread.daemon = True
                     elif key == 'device': #Initialize Device Thread
                         self.logger.info('Setting up Device Thread')
-                        self.device_thread = device_thread.VHF_UHF_PA_Thread(self.ssid, self.cfg['device'])
+                        self.device_thread = VHF_UHF_PA_Thread(self.cfg['device'], self)
                         self.device_thread.daemon = True
             #Launch threads
             for key in self.cfg['thread_enable'].keys():
@@ -229,7 +241,7 @@ class Main_Thread(threading.Thread):
                     self.logger.warning("Terminated Service Thread.")
                     #self.service_thread.join() # wait for the thread to finish what it's doing
                 elif key == 'device': #Initialize Radio Thread
-                    self.device_thread.stop_thread()
+                    self.device_thread.stop()
                     self.logger.warning("Terminated Device Thread...")
                     #self.md01_thread.join() # wait for the thread to finish what it's doing
 

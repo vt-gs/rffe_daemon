@@ -3,12 +3,12 @@
 # Logger utilities
 
 import math, sys, os, time, struct, traceback, binascii, logging
-import datetime as dt
+import datetime
 import numpy as np
 
 class MyFormatter(logging.Formatter):
     #Overriding formatter for datetime
-    converter=dt.datetime.utcfromtimestamp
+    converter=datetime.datetime.utcfromtimestamp
     def formatTime(self, record, datefmt=None):
         ct = self.converter(record.created)
         if datefmt:
@@ -19,13 +19,13 @@ class MyFormatter(logging.Formatter):
         return s
 
 def setup_logger(cfg):
-    if cfg['startup_ts'] == None: ts = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    if cfg['startup_ts'] == None: ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     else: ts = cfg['startup_ts']
     name = cfg['name']
     verbose = cfg['verbose']
     path = cfg['path']
     level = cfg['level']
-    file = "{:s}.{:s}.log".format(name, ts)
+    file = "{:s}.{:s}.log".format(ts, name)
     file_path = '/'.join([path, file])
 
     #formatter = MyFormatter(fmt='%(asctime)s | %(threadName)8s | %(levelname)8s | %(message)s',datefmt='%Y-%m-%dT%H:%M:%S.%fZ')

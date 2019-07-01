@@ -27,58 +27,35 @@ import numpy
 
 class VHF_UHF_Power_Amplifier(object):
     """docstring for ."""
-    def __init__ (self, cfg, logger, parent = None):
-        self.cfg    = cfg
-        self.logger = logger
-        self.parent = parent
-        self.name   = self.cfg['name'].upper()+"_Interface"
+    def __init__ (self, cfg, parent = None):
+        self._init_tm()
+        self._init_tc()
+        self.cfg = cfg
 
-        print self._utc_ts() + "Initializing {:s} {:s} Interface".format(self.cfg['ssid'].upper(), self.name.upper())
-        self.logger.info("Initializing {:s} {:s} Interface".format(self.cfg['ssid'].upper(), self.name.upper())
-
-        self.ip         = self.cfg['ip']        #IP Address of MD01 Controller
-        self.port       = self.cfg['port']      #Port number of MD01 Controller
-        self.timeout    = self.cfg['timeout']   #Socket Timeout interval, default = 1.0 seconds
-        self.ssid       = self.cfg['ssid']
-
-        self.connected  = False
-        self.feedback   = ''        #Feedback data from socket
 
         self.status = {
-            'ts': None,
             'connected':False,
-            'cur_az': 0.0,
-            'cur_el':0.0
+            'ts':None
         }
 
-        self.stop_cmd   = bytearray()   #Stop Command Message
-        self.status_cmd = bytearray()   #Status Command Message
-        self.set_cmd    = bytearray()   #Set Command Message
-        for x in [0x57,0,0,0,0,0,0,0,0,0,0,0x0F,0x20]: self.stop_cmd.append(x)
-        for x in [0x57,0,0,0,0,0,0,0,0,0,0,0x1F,0x20]: self.status_cmd.append(x)
-        for x in [0x57,0,0,0,0,0x0a,0,0,0,0,0x0a,0x2F,0x20]: self.set_cmd.append(x) #PH=PV=0x0a, 0x0a = 10, BIG-RAS/HR is 10 pulses per degree
-
-    def _utc_ts(self):
-        return "{:s} | amp  | ".format(datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ'))
+        self.connected = False
+        print 'initialized power amp class'
 
     def connect(self):
         #connect to md01 controller
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM) #TCP Socket
-        self.sock.settimeout(self.timeout)   #set socket timeout
+        self.sock.settimeout(self.cfg['timeout'])   #set socket timeout
         try:
-            self.sock.connect((self.ip, self.port))
+            self.sock.connect((self.cfg['ip'], self.cfg['port']))
             time.sleep(0.1)
             self.connected = True
-            self.status['connected'] = self.connected
-            self.status['ts'] = None #clear rx timestamp
-            #self.logger.info("Connected to MD01 at: [{:s}:{:d}]".format(self.ip, self.port))
             return self.connected
         except socket.error as msg:
             #self.logger.info("Failed to connected to MD01 at [{:s}:{:d}]: {:s}".format(self.ip, self.port, msg))
             self.sock.close()
             self.connected = False
-            self.status['connected'] = self.connected
-            self.status['ts'] = None #clear rx timestamp
+            #self.status['connected'] = self.connected
+            #self.status['ts'] = None #clear rx timestamp
             return self.connected
 
     def disconnect(self):
@@ -87,74 +64,41 @@ class VHF_UHF_Power_Amplifier(object):
         self.sock.shutdown(socket.SHUT_RDWR)
         self.sock.close()
         self.connected = False
-        self.status['connected'] = self.connected
-        self.status['ts'] = None #clear rx timestamp
-        print self._utc_ts() + "Disconnected from {:s} MD01 Controller".format(self.ssid)
-        self.logger.info("Disconnected from {:s} MD01 Controller".format(self.ssid))
         return self.connected
 
-    def get_status(self):
-        #get azimuth and elevation feedback from md01
-        if self.connected == False:
-            return self._set_bad_status()
+    def get_telemetry(self):
+        self.connected = self._send_amp_tc('query')
+        return self.tm
+
+    def set_tx_mode(self, mode):
+        if mode == 'UHF': self.connected = self._send_amp_tc('uhf_tx')
+        if mode == 'VHF': self.connected = self._send_amp_tc('vhf_tx')
+
+    def set_rx_mode(self):
+        self.connected = self._send_amp_tc('rx_all')
+
+
+    def _send_amp_tc(self, cmd):
+        if (not self.connected):
+            return self.connected
         else:
             try:
-                #print 'sending STATUS'
-                self.sock.send(self.status_cmd)
-                #print self._utc_ts() + 'Sent \'GET\' command to MD01'
-                self.feedback = self._recv_data()
-                #print binascii.hexlify(self.feedback)
-                self._convert_feedback()
+                if cmd in self.tc.keys(): #verify allowable command
+                    self.tc_msg = self.tc[cmd]
+                    if self.tc_msg:
+                        self.sock.sendall(self.tc_msg)
+                        feedback = self._recv_data()
+                        #print feedback
+                        if self.tc_msg == 'q':
+                            self._parse_query_feedback(feedback.strip())
+                            return self.connected
+                        #self.logger.info('Sent command to amp: {:s}'.format(cmd))
             except socket.error as e:
                 self._Handle_Socket_Exception(e)
-            return self.status #return 0 good status, feedback az/el
+            return self.connected #return 0 good status, feedback az/el
 
-    def set_stop(self):
-        #stop md01 immediately
-        if self.connected == False:
-            self._set_bad_status()
-        else:
-            try:
-                self.sock.send(self.stop_cmd)
-                print self._utc_ts() + 'Sent \'STOP\' command to MD01'
-                self.logger.info('Sent \'STOP\' command to MD01')
-                self.feedback = self._recv_data()
-                self._convert_feedback()
-            except socket.error as e:
-                self._Handle_Socket_Exception(e)
-            return self.status #return 0 good status, feedback az/el
 
-    def set_position(self, az, el):
-        #set azimuth and elevation of md01
-        self.cmd_az = az
-        self.cmd_el = el
-        self._format_set_cmd()
-        if self.connected == False:
-            return self._set_bad_status
-        else:
-            try:
-                self.sock.send(self.set_cmd)
-                print self._utc_ts() + 'Sent \'SET\' command to MD01: AZ={:3.1f}, EL={:3.1f}'.format(self.cmd_az, self.cmd_el)
-                self.logger.info('Sent \'SET\' command to MD01: AZ={:3.1f}, EL={:3.1f}'.format(self.cmd_az, self.cmd_el))
-                #Set Position command does not get a feedback response from MD-01
-            except socket.error as msg:
-                self._Handle_Socket_Exception(e)
-            return self.status #return 0 good status, feedback az/el
 
-    #### PRIVATE FUNCTION CALLS ####
-    def _Handle_Socket_Exception(self, e):
-        self.logger.info("Socket Exception Thrown: {:s}".format(str(e)))
-        self.logger.info("Shutting Down Socket...")
-        self.sock.close()
-        self._set_bad_status()
-
-    def _set_bad_status(self):
-        print self._utc_ts() + 'bad status'
-        self.status['ts'] = None
-        self.status['connected'] = False
-        self.status['cur_az'] = 0.0
-        self.status['cur_el'] = 0.0
-        return self.status
 
     def _recv_data(self):
         #reset RX Timestamp
@@ -164,19 +108,13 @@ class VHF_UHF_Power_Amplifier(object):
         feedback = ''
         while True: #cycle through recv buffer
             c = self.sock.recv(1)
-            #print c, binascii.hexlify(c)
-            if binascii.hexlify(c) == '57': # Start Flag detected
-            #if c == 0x57: # Start Flag detected
-                #print 'ping'
-                if self.status['ts'] == None: #set timestamp on first valid character
-                    self.status['ts'] = datetime.datetime.utcnow()
-                feedback += c
+            if self.tc_msg == c: #amp should exho command
+                if self.tc_msg in ['v','u','r']:break
                 flag = True
                 while flag: #continue cycling through receive buffer
                     c = self.sock.recv(1)
                     #print c, binascii.hexlify(c)
-                    if binascii.hexlify(c) == '20':
-                    #if c == 0x20:
+                    if c == '\n': #detect end of line
                         feedback += c
                         flag = False
                     else:
@@ -185,52 +123,119 @@ class VHF_UHF_Power_Amplifier(object):
         #print binascii.hexlify(feedback)
         return feedback
 
-    def _convert_feedback(self):
-        h1 = ord(self.feedback[1])
-        h2 = ord(self.feedback[2])
-        h3 = ord(self.feedback[3])
-        h4 = ord(self.feedback[4])
-        #print h1, h2, h3, h4
-        self.status['cur_az'] = (h1*100.0 + h2*10.0 + h3 + h4/10.0) - 360.0
-        #print self.status['cur_az']
-        self.ph = ord(self.feedback[5])
+    def _Handle_Socket_Exception(self, e):
+        #self.logger.info("Socket Exception Thrown: {:s}".format(str(e)))
+        #self.logger.info("Shutting Down Socket...")
+        self.sock.close()
+        self.connected = False
+        #self._set_bad_status()
 
-        v1 = ord(self.feedback[6])
-        v2 = ord(self.feedback[7])
-        v3 = ord(self.feedback[8])
-        v4 = ord(self.feedback[9])
-        self.status['cur_el'] = (v1*100.0 + v2*10.0 + v3 + v4/10.0) - 360.0
-        #print self.status['cur_el']
-        self.pv = ord(self.feedback[10])
-        #print self.status
+    def _set_bad_status(self):
+        print self._utc_ts() + 'bad status'
+        self.status['ts'] = None
+        self.status['connected'] = False
+        self.status['cur_az'] = 0.0
+        self.status['cur_el'] = 0.0
+        return self.status
 
-    def _format_set_cmd(self):
-        #make sure cmd_az in range -180 to +540
-        if   (self.cmd_az>540): self.cmd_az = 540
-        elif (self.cmd_az < -180): self.cmd_az = -180
-        #make sure cmd_el in range 0 to 180
-        if   (self.cmd_el < 0): self.cmd_el = 0
-        elif (self.cmd_el>180): self.cmd_el = 180
-        #convert commanded az, el angles into strings
-        cmd_az_str = str(int((float(self.cmd_az) + 360) * self.ph))
-        cmd_el_str = str(int((float(self.cmd_el) + 360) * self.pv))
-        #print target_az, len(target_az)
-        #ensure strings are 4 characters long, pad with 0s as necessary
-        if   len(cmd_az_str) == 1: cmd_az_str = '000' + cmd_az_str
-        elif len(cmd_az_str) == 2: cmd_az_str = '00'  + cmd_az_str
-        elif len(cmd_az_str) == 3: cmd_az_str = '0'   + cmd_az_str
-        if   len(cmd_el_str) == 1: cmd_el_str = '000' + cmd_el_str
-        elif len(cmd_el_str) == 2: cmd_el_str = '00'  + cmd_el_str
-        elif len(cmd_el_str) == 3: cmd_el_str = '0'   + cmd_el_str
-        #print target_az, len(str(target_az)), target_el, len(str(target_el))
-        #update Set Command Message
-        self.set_cmd[1] = cmd_az_str[0]
-        self.set_cmd[2] = cmd_az_str[1]
-        self.set_cmd[3] = cmd_az_str[2]
-        self.set_cmd[4] = cmd_az_str[3]
-        self.set_cmd[5] = self.ph
-        self.set_cmd[6] = cmd_el_str[0]
-        self.set_cmd[7] = cmd_el_str[1]
-        self.set_cmd[8] = cmd_el_str[2]
-        self.set_cmd[9] = cmd_el_str[3]
-        self.set_cmd[10] = self.pv
+
+    def get_tc_msg(self, tc):
+        if tc in self.tc.keys(): #check that command is in TC keys
+            return self.tc[tc]
+        else:
+            return -1 #return negative indicator
+
+    def _parse_query_feedback(self, data):
+        data = data.split(',')
+        #print data
+        try:
+            self.tm['uptime']           = int(data[1])
+            self.tm['reset_count']      = int(data[2])
+            self.tm['pa_state']         = data[3]
+
+            self.tm['temp']['current']  = float(data[4])
+            self.tm['temp']['case']     = float(data[5])
+            self.tm['temp']['amplifier']= float(data[6])
+
+            self.tm['bus']['shunt_mv']  = float(data[7])
+            self.tm['bus']['bus_v']     = float(data[8])
+            self.tm['bus']['bus_ma']    = float(data[9])
+
+            self.tm['rf']['pa_fwd_mv']  = float(data[10])
+            self.tm['rf']['pa_rev_mv']  = float(data[11])
+            self.tm['rf']['pa_fwd_pwr'] = float(data[12])
+            self.tm['rf']['pa_rev_pwr'] = float(data[13])
+            self.tm['rf']['vswr']       = float(data[14])
+
+            self.tm['btn']['red']       = bool(int(data[15]))
+            self.tm['btn']['black']     = bool(int(data[16]))
+
+            self.tm['alert']['thermo']  = bool(int(data[17]))
+            self.tm['alert']['current'] = bool(int(data[18]))
+            self.tm['alert']['temp']    = bool(int(data[19]))
+
+            self.tm['status']['fan']            = bool(int(data[20]))
+            self.tm['status']['pwr_rel']        = bool(int(data[21]))
+            self.tm['status']['vhf_coax_rel']   = bool(int(data[22]))
+            self.tm['status']['uhf_coax_rel']   = bool(int(data[23]))
+            self.tm['status']['vhf_ptt_out']    = bool(int(data[24]))
+            self.tm['status']['uhf_ptt_out']    = bool(int(data[25]))
+            self.tm['status']['cal_mode']       = bool(int(data[26]))
+            return True
+        except Exception as e:
+            return False
+
+
+    def _init_tm(self):
+        self.tm = {
+            'uptime'        :0,
+            'reset_count'   :0,
+            'pa_state'      :"",
+            'temp':{
+                'current'   :0.0,
+                'case'      :0.0,
+                'amplifier' :0.0,
+            },
+            'bus':{
+                'shunt_mv'  :0.0,
+                'bus_v'     :0.0,
+                'bus_ma'    :0.0
+            },
+            'rf':{
+                'pa_fwd_mv' :0.0,
+                'pa_rev_mv' :0.0,
+                'pa_fwd_pwr':0.0,
+                'pa_rev_pwr':0.0,
+                'vswr'      :0.0
+            },
+            'btn':{
+                'red':False,
+                'black':False
+            },
+            'alert':{
+                'thermo' :False,
+                'current':False,
+                'temp'   :False
+            },
+            'status':{
+                'fan':False,
+                'pwr_rel':False,
+                'vhf_coax_rel':False,
+                'uhf_coax_rel':False,
+                'vhf_ptt_out':False,
+                'uhf_ptt_out':False,
+                'cal_mode':False
+            }
+        }
+
+    def _init_tc(self):
+        self.tc = {
+            'query':'q',
+            'rx_all':'r',
+            'vhf_tx':'v',
+            'uhf_tx':'u',
+            'fan_manual':'f',
+            'clear_eeprom':'c',
+            'read_eeprom':'e',
+            'sketch_vers':'s'
+        }

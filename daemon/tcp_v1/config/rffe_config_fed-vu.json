@@ -8,7 +8,7 @@
     },
     "thread_enable":{
         "service": true,
-        "device":false
+        "device":true
     },
     "service":{
         "thread_name":"Service_Thread",
@@ -21,9 +21,11 @@
     },
     "device":{
         "thread_name":"Amp_Thread",
-        "name":"amp",
-        "ip":"0.0.0.0",
-        "port":8002,
-        "hang_time":0.50
+        "name":"amplifier",
+        "ip":"192.168.30.10",
+        "port":2000,
+        "retry_time":5.0,
+        "timeout":0.5,
+        "hang_time":0.1
     }
 }
