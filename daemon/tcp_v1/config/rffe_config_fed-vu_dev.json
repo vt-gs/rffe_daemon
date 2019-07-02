@@ -22,7 +22,7 @@
     "device":{
         "thread_name":"Amp_Thread",
         "name":"amplifier",
-        "ip":"10.42.0.51",
+        "ip":"192.168.30.10",
         "port":2000,
         "retry_time":5.0,
         "timeout":0.5,
