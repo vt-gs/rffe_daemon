@@ -168,8 +168,11 @@ class Main_Thread(threading.Thread):
             'burst_sec':self.ptt_msg['burst_sec']
         })
         self.cfg['device']['hang_time']
+        #self.ptt_msg.update({
+        #    'sec_to_rx':self.ptt_msg['sec_to_tx']+self.ptt_msg['burst_sec'] + self.cfg['device']['hang_time']
+        #})
         self.ptt_msg.update({
-            'sec_to_rx':self.ptt_msg['sec_to_tx']+self.ptt_msg['burst_sec'] + self.cfg['device']['hang_time']
+            'sec_to_rx':self.ptt_msg['burst_sec'] + self.cfg['device']['hang_time']
         })
         if ((self.state == 'RX') or (self.state == 'TX')):
             self._set_state('TX')
