@@ -1,7 +1,7 @@
 {
     "daemon_name":"rffed",
     "ssid":"fed-vu",
-    "log_path":"/log/rffed",
+    "log_path":"/vtgs/log/rffed",
     "main_log":{
         "level":"DEBUG",
         "verbose":true
