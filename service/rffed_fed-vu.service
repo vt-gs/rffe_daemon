@@ -4,9 +4,10 @@ After=multi-user.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python /usr/bin/dummy_service.py
 User=root
 Group=vtgs-admin
+WorkingDirectory=/vtgs/services/rffed/tcp_v1/
+ExecStart=/usr/bin/python /vtgs/services/rffed/tcp_v1/rffe_daemon.py
 
 [Install]
 WantedBy=multi-user.target
