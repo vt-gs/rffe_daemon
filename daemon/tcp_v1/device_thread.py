@@ -64,10 +64,10 @@ class VHF_UHF_PA_Thread(threading.Thread):
                     msg = self.tx_q.get()
                     if   msg == 'TX':
                         self._set_amp_tx('UHF')
-                        self._query_amp()
+                        #self._query_amp()
                     elif msg == 'RX':
                         self._set_amp_rx()
-                        self._query_amp()
+                        #self._query_amp()
                 self._query_amp()
         #self.sock.close()
         self.logger.warning('{:s} Terminated'.format(self.name))
