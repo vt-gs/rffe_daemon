@@ -1,0 +1,31 @@
+{
+    "daemon_name":"rffed",
+    "ssid":"fed-vu",
+    "log_path":"/vtgs/log/rffed",
+    "main_log":{
+        "level":"DEBUG",
+        "verbose":true
+    },
+    "thread_enable":{
+        "service": true,
+        "device":true
+    },
+    "service":{
+        "thread_name":"Service_Thread",
+        "type":"TCP",
+        "name":"service",
+        "ip":"0.0.0.0",
+        "port":8001,
+        "retry_time":5.0,
+        "timeout":0.01
+    },
+    "device":{
+        "thread_name":"Amp_Thread",
+        "name":"amplifier",
+        "ip":"10.42.0.51",
+        "port":2000,
+        "retry_time":5.0,
+        "timeout":0.2,
+        "hang_time":0.200
+    }
+}
